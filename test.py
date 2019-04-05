@@ -90,20 +90,23 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
             await asyncio.sleep(0.25)
         self.add_async_cleanup(cleanup_session)
 
-        sent_content = 'Some content'
+        async def sent_content():
+            for _ in range(10000):
+                yield b'Some content'
+
         sent_headers = {
             'from-downstream': 'downstream-header-value',
         }
         async with session.request(
                 'PATCH', 'http://localhost:9000/http',
-                data=sent_content, headers=sent_headers) as response:
+                data=sent_content(), headers=sent_headers) as response:
             received_content = await response.json()
             received_headers = response.headers
 
         # Assert that we received the echo
         self.assertEqual(received_content['method'], 'PATCH')
         self.assertEqual(received_content['headers']['from-downstream'], 'downstream-header-value')
-        self.assertEqual(received_content['content'], 'Some content')
+        self.assertEqual(received_content['content'], 'Some content'*10000)
         self.assertEqual(received_headers['from-upstream'], 'upstream-header-value')
 
         # Make a websockets connection to the proxy
