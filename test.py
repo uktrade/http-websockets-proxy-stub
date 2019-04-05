@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import unittest
 from unittest.mock import (
@@ -51,10 +52,27 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
                 'from-upstream': 'upstream-header-value',
             })
 
+        async def handle_websockets(request):
+            wsock = web.WebSocketResponse()
+            await wsock.prepare(request)
+
+            await wsock.send_str(json.dumps(dict(request.headers)))
+
+            async for msg in wsock:
+                if msg.type == aiohttp.WSMsgType.CLOSE:
+                    await wsock.close()
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    await wsock.send_str(msg.data)
+                if msg.type == aiohttp.WSMsgType.BINARY:
+                    await wsock.send_bytes(msg.data)
+
+            return wsock
+
         upstream = web.Application()
         upstream.add_routes([
             # Using patch as it's one that can be forgotten about
             web.patch('/http', handle_http),
+            web.get('/websockets', handle_websockets),
         ])
         upstream_runner = web.AppRunner(upstream)
         await upstream_runner.setup()
@@ -64,20 +82,50 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
         # There doesn't seem to be a way to wait for uvicorn start
         await asyncio.sleep(1)
 
-        # Make a request to the proxy
-        async with aiohttp.ClientSession() as session:
-            sent_content = 'Some content'
-            sent_headers = {
-                'from-downstream': 'downstream-header-value',
-            }
-            async with session.request(
-                    'PATCH', 'http://localhost:9000/http',
-                    data=sent_content, headers=sent_headers) as response:
-                received_content = await response.json()
-                received_headers = response.headers
+        # Make a http request to the proxy
+        session = aiohttp.ClientSession()
+
+        async def cleanup_session():
+            await session.close()
+            await asyncio.sleep(0.25)
+        self.add_async_cleanup(cleanup_session)
+
+        sent_content = 'Some content'
+        sent_headers = {
+            'from-downstream': 'downstream-header-value',
+        }
+        async with session.request(
+                'PATCH', 'http://localhost:9000/http',
+                data=sent_content, headers=sent_headers) as response:
+            received_content = await response.json()
+            received_headers = response.headers
 
         # Assert that we received the echo
         self.assertEqual(received_content['method'], 'PATCH')
         self.assertEqual(received_content['headers']['from-downstream'], 'downstream-header-value')
         self.assertEqual(received_content['content'], 'Some content')
         self.assertEqual(received_headers['from-upstream'], 'upstream-header-value')
+
+        # Make a websockets connection to the proxy
+        # (We deliberatly use the same session to ensure to assert on re-used connections)
+        sent_headers = {
+            'from-downstream-websockets': 'websockets-header-value',
+        }
+        async with session.ws_connect(
+                'http://localhost:9000/websockets', headers=sent_headers) as wsock:
+            msg = await wsock.receive()
+            headers = json.loads(msg.data)
+
+            await wsock.send_bytes(b'some-\0binary-data')
+            msg = await wsock.receive()
+            received_binary_content = msg.data
+
+            await wsock.send_str('some-text-data')
+            msg = await wsock.receive()
+            received_text_content = msg.data
+
+            await wsock.close()
+
+        self.assertEqual(headers['from-downstream-websockets'], 'websockets-header-value')
+        self.assertEqual(received_binary_content, b'some-\0binary-data')
+        self.assertEqual(received_text_content, 'some-text-data')
