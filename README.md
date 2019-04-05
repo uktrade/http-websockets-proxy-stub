@@ -10,7 +10,6 @@ There are no "hooks" offered: the code must be directly incorporated into the re
 To proxy `http://localhost:8000` to `http://localhost:8888`:
 
 ```bash
-pip install aiohttp
-pip install uvicorn
+pip install -r requirements.txt
 PORT=8000 UPSTREAM_ROOT=http://localhost:8888 python3 proxy.py
 ```
