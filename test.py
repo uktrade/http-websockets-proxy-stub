@@ -1,6 +1,8 @@
 import asyncio
+import concurrent.futures
 import json
 import os
+import signal
 import unittest
 from unittest.mock import (
     patch,
@@ -34,7 +36,13 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
         loop = asyncio.get_event_loop()
 
         # Start the proxy
-        proxy_future = loop.run_in_executor(None, proxy.main)
+        executor = concurrent.futures.ProcessPoolExecutor()
+
+        async def cleanup_executor():
+            for process_id in executor._processes:
+                os.kill(process_id, signal.SIGKILL)
+        self.add_async_cleanup(cleanup_executor)
+        proxy_future = loop.run_in_executor(executor, proxy.main)
 
         async def cleanup_proxy():
             proxy_future.cancel()
@@ -98,7 +106,7 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
             'from-downstream': 'downstream-header-value',
         }
         async with session.request(
-                'PATCH', 'http://localhost:9000/http',
+                'PATCH', 'http://localhost:8000/http',
                 data=sent_content(), headers=sent_headers) as response:
             received_content = await response.json()
             received_headers = response.headers
