@@ -13,7 +13,8 @@ async def proxy(upstream_root, session, scope, receive, send):
     query = scope['query_string'].decode('utf-8')
 
     headers_from_downstream = [
-        (str(key), str(value)) for (key, value) in scope['headers']
+        (key.decode(), value.decode()) for (key, value) in scope['headers']
+        if key != b'transfer-encoding'
     ]
 
     if scope['type'] == 'http':
