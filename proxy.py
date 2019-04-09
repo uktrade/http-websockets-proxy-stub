@@ -80,16 +80,13 @@ async def async_main():
                 status=upstream_response.status,
                 headers=without_transfer_encoding(upstream_response.headers)
             )
-            try:
-                await downstream_response.prepare(downstream_request)
-                while True:
-                    chunk = await upstream_response.content.readany()
-                    if chunk:
-                        await downstream_response.write(chunk)
-                    else:
-                        break
-            finally:
-                await downstream_response.write_eof()
+            await downstream_response.prepare(downstream_request)
+            while True:
+                chunk = await upstream_response.content.readany()
+                if chunk:
+                    await downstream_response.write(chunk)
+                else:
+                    break
 
         return downstream_response
 
