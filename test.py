@@ -40,7 +40,8 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
 
         async def cleanup_executor():
             for process_id in executor._processes:
-                os.kill(process_id, signal.SIGKILL)
+                os.kill(process_id, signal.SIGTERM)
+                break
         self.add_async_cleanup(cleanup_executor)
         proxy_future = loop.run_in_executor(executor, proxy.main)
 
