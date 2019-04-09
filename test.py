@@ -1,8 +1,6 @@
 import asyncio
-import concurrent.futures
 import json
 import os
-import signal
 import unittest
 from unittest.mock import (
     patch,
@@ -33,20 +31,10 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
     async def test_happy_path_behaviour(self):
         """Asserts on almost all of the happy path behaviour of the proxy
         """
-        loop = asyncio.get_event_loop()
-
-        # Start the proxy
-        executor = concurrent.futures.ProcessPoolExecutor()
-
-        async def cleanup_executor():
-            for process_id in executor._processes:
-                os.kill(process_id, signal.SIGTERM)
-                break
-        self.add_async_cleanup(cleanup_executor)
-        proxy_future = loop.run_in_executor(executor, proxy.main)
+        proxy_task = asyncio.ensure_future(proxy.async_main())
 
         async def cleanup_proxy():
-            proxy_future.cancel()
+            proxy_task.cancel()
             await asyncio.sleep(0)
         self.add_async_cleanup(cleanup_proxy)
 

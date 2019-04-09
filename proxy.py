@@ -1,210 +1,115 @@
 import asyncio
+import logging
 import os
-import urllib.parse
+import sys
 
 import aiohttp
-import uvicorn
-
-MAX_CHUNK_SIZE = 65536
-
-
-async def proxy(upstream_root, session, scope, receive, send):
-    path = scope['path']
-    query = scope['query_string'].decode('utf-8')
-
-    headers_from_downstream = [
-        (key.decode(), value.decode()) for (key, value) in scope['headers']
-        if key != b'transfer-encoding'
-    ]
-
-    if scope['type'] == 'http':
-        await proxy_http(upstream_root, session, receive, send,
-                         scope['method'], path, query, headers_from_downstream)
-    elif scope['type'] == 'websocket':
-        await proxy_websockets(upstream_root, session, receive, send,
-                               path, query, headers_from_downstream)
-    else:
-        assert False
+from aiohttp import web
+from yarl import (
+    URL,
+)
 
 
-async def proxy_http(upstream_root, session, receive, send,
-                     method, path, query, headers_from_downstream):
-    async def yield_http_data():
-        while True:
-            event = await receive()
-            yield event['body']
-            if not event['more_body']:
-                break
+async def async_main():
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    for logger_name in ['aiohttp.server', 'aiohttp.web', 'aiohttp.access']:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(stdout_handler)
 
-    upstream_url = upstream_root + path
-    params = [
-        (key, value)
-        for key, values in urllib.parse.parse_qs(query).items()
-        for value in values
-    ]
+    port = int(os.environ['PORT'])
+    upstream_root = os.environ['UPSTREAM_ROOT']
+    client_session = aiohttp.ClientSession()
 
-    print('HTTP: connection from downstream')
-    print('HTTP: uploading to upstream...')
-    async with session.request(
-            method, upstream_url, params=params,
-            data=yield_http_data(), headers=headers_from_downstream) as response:
-        print('HTTP: uploading to upstream... (done)')
+    def without_transfer_encoding(headers):
+        return {
+            key: value for key, value in headers.items()
+            if key.lower() != 'transfer-encoding'
+        }
 
-        headers_from_upstream_str = response.headers.items()
-        headers_from_upstream_bytes = [
-            (key.encode(), value.encode()) for (key, value) in headers_from_upstream_str
-        ]
+    async def handle(downstream_request):
+        upstream_url = URL(upstream_root) \
+            .with_path(downstream_request.url.path) \
+            .with_query(downstream_request.url.query)
+        is_websocket = \
+            downstream_request.headers.get('connection', None) == 'Upgrade' and \
+            downstream_request.headers.get('upgrade', None) == 'websocket'
+        return \
+            await handle_websocket(upstream_url, downstream_request) if is_websocket else \
+            await handle_http(upstream_url, downstream_request)
 
-        print('HTTP: sending headers to downstream...')
-        await send({
-            'type': 'http.response.start',
-            'status': response.status,
-            'headers': headers_from_upstream_bytes,
-        })
-        print('HTTP: sending headers to downstream... (done)')
+    async def handle_websocket(upstream_url, downstream_request):
+        async with client_session.ws_connect(
+                str(upstream_url),
+                headers=without_transfer_encoding(downstream_request.headers)
+        ) as upstream_ws:
+            downstream_ws = web.WebSocketResponse()
+            await downstream_ws.prepare(
+                downstream_request,
+            )
 
-        print('HTTP: sending data downstream...')
-        try:
-            while True:
-                data = await response.content.read(MAX_CHUNK_SIZE)
-                await send({
-                    'type': 'http.response.body',
-                    'body': data,
-                    'more_body': True,
-                })
-                if not data:
-                    break
-            print('HTTP: sending data downstream... (done)')
-        finally:
-            print('HTTP: end of downstream HTTP response')
-            await send({
-                'type': 'http.response.body',
-                'body': b'',
-                'more_body': False,
-            })
+            async def ws_proxy(from_ws, to_ws):
+                async for msg in from_ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        await to_ws.send_str(msg.data)
 
-        print('HTTP: end of downstream HTTP response')
+                    elif msg.type == aiohttp.WSMsgType.BINARY:
+                        await to_ws.send_bytes(msg.data)
 
-    print('HTTP: sending data downstream... (done)')
+                    elif msg.type == aiohttp.WSMsgType.CLOSE:
+                        await to_ws.close()
 
+                    elif msg.type == aiohttp.WSMsgType.ERROR:
+                        await to_ws.close()
 
-async def proxy_websockets(upstream_root, session, receive, send,
-                           path, query, headers_from_downstream):
+            upstream_reader_task = asyncio.ensure_future(ws_proxy(downstream_ws, upstream_ws))
+            await ws_proxy(upstream_ws, downstream_ws)
+            upstream_reader_task.cancel()
 
-    print('Websockets: connection from downstream')
+        return downstream_ws
 
-    async def upstream_reader(upstream_ws):
-        async for msg in upstream_ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                await send({
-                    'type': 'websocket.send',
-                    'text': msg.data,
-                })
+    async def handle_http(upstream_url, downstream_request):
+        async with client_session.request(
+                downstream_request.method, str(upstream_url),
+                params=downstream_request.url.query,
+                headers=without_transfer_encoding(downstream_request.headers),
+                data=downstream_request.content,
+        ) as upstream_response:
 
-            elif msg.type == aiohttp.WSMsgType.BINARY:
-                await send({
-                    'type': 'websocket.send',
-                    'bytes': msg.data,
-                })
-
-            elif msg.type == aiohttp.WSMsgType.CLOSE:
-                await send({
-                    'type': 'websocket.close',
-                })
-
-            elif msg.type == aiohttp.WSMsgType.ERROR:
-                await send({
-                    'type': 'websocket.close',
-                })
-
-    async def downstream_reader(upstream_ws, upstream_reader_task):
-        while True:
-            event = await receive()
-            if event['type'] == 'websocket.receive' and 'text' in event:
-                await upstream_ws.send_str(event['text'])
-
-            elif event['type'] == 'websocket.receive' and 'bytes' in event:
-                await upstream_ws.send_bytes(event['text'])
-
-            elif event['type'] == ('websocket.close', 'websocket.disconnect'):
-                upstream_reader_task.cancel()
-                break
-
-    event = await receive()
-    assert event['type'] == 'websocket.connect'
-
-    upstream_url = upstream_root + path + (('?' + query) if query else '')
-    async with session.ws_connect(upstream_url, headers=headers_from_downstream) as upstream_ws:
-        await send({
-            'type': 'websocket.accept',
-            'subprotocol': upstream_ws.protocol,
-        })
-
-        upstream_reader_task = asyncio.ensure_future(upstream_reader(upstream_ws))
-        await downstream_reader(upstream_ws, upstream_reader_task)
-
-    await send({
-        'type': 'websocket.close',
-    })
-
-    print('Websockets: end of connection from downstream')
-
-
-def memoize(func):
-    # MIT https://github.com/michalc/aiomemoize
-
-    cache = {}
-
-    async def cached(*args, **kwargs):
-        key = (args, tuple(kwargs.items()))
-
-        try:
-            future = cache[key]
-        except KeyError:
-            future = asyncio.Future()
-            cache[key] = future
-
+            downstream_response = web.StreamResponse(
+                status=upstream_response.status,
+                headers=without_transfer_encoding(upstream_response.headers)
+            )
             try:
-                result = await func(*args, **kwargs)
-            except BaseException as exception:
-                del cache[key]
-                future.set_exception(exception)
-            else:
-                future.set_result(result)
+                await downstream_response.prepare(downstream_request)
+                while True:
+                    chunk = await upstream_response.content.readany()
+                    if chunk:
+                        await downstream_response.write(chunk)
+                    else:
+                        break
+            finally:
+                await downstream_response.write_eof()
 
-        return await future
+        return downstream_response
 
-    def invalidate(*args, **kwargs):
-        key = (args, tuple(kwargs.items()))
-        del cache[key]
+    app = web.Application()
+    app.add_routes([
+        getattr(web, method)(r'/{path:.*}', handle)
+        for method in ['delete', 'get', 'head', 'options', 'patch', 'post', 'put']
+    ])
 
-    return cached, invalidate
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    await asyncio.Future()
 
 
 def main():
-    port = int(os.environ['PORT'])
-    upstream_root = os.environ['UPSTREAM_ROOT']
-
-    # The slightly convoluted startup is so
-    #
-    # - We can inject dynamic values into the handler, `proxy`
-    #
-    # - The session, which is the HTTP/websocket connection pool, must be
-    #   created only once for an application, and must be created from the
-    #   _same_ loop as its used. uvicorn makes its own loops, and offers no
-    #   "init" callback, and so we pass a memoized getter to the handler
-    async def _get_session():
-        return aiohttp.ClientSession()
-    get_session, _ = memoize(_get_session)
-
-    async def _proxy(scope, receive, send):
-        session = await get_session()
-        return await proxy(upstream_root, session, scope, receive, send)
-
-    uvicorn.run(
-        _proxy,
-        host='0.0.0.0', port=port, log_level='info',
-    )
+    loop = asyncio.get_event_loop()
+    loop.create_task(async_main())
+    loop.run_forever()
 
 
 if __name__ == '__main__':
