@@ -53,22 +53,36 @@ async def async_main():
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 await to_ws.close()
 
-        async with client_session.ws_connect(
-                str(upstream_url),
-                headers=without_transfer_encoding(downstream_request.headers)
-        ) as upstream_ws:
+        async def upstream():
+            try:
+                async with client_session.ws_connect(
+                        str(upstream_url),
+                        headers=without_transfer_encoding(downstream_request.headers)
+                ) as upstream_ws:
+                    upstream_connection.set_result(upstream_ws)
+                    async for msg in upstream_ws:
+                        await on_msg(msg, downstream_ws)
+            except BaseException as exception:
+                if not upstream_connection.done():
+                    upstream_connection.set_exception(exception)
+                raise
+
+        # This is slightly convoluted, but aiohttp documents that reading
+        # from websockets should be done in the same task as the websocket was
+        # created, so we read from downstream in _this_ task, and create
+        # another task to connect to and read from the upstream socket
+        upstream_connection = asyncio.Future()
+        upstream_task = asyncio.ensure_future(upstream())
+
+        try:
+            upstream_ws = await upstream_connection
             downstream_ws = web.WebSocketResponse()
-            await downstream_ws.prepare(
-                downstream_request,
-            )
+            await downstream_ws.prepare(downstream_request)
 
-            async def ws_proxy(from_ws, to_ws):
-                async for msg in from_ws:
-                    await on_msg(msg, to_ws)
-
-            upstream_reader_task = asyncio.ensure_future(ws_proxy(downstream_ws, upstream_ws))
-            await ws_proxy(upstream_ws, downstream_ws)
-            upstream_reader_task.cancel()
+            async for msg in downstream_ws:
+                await on_msg(msg, upstream_ws)
+        finally:
+            upstream_task.cancel()
 
         return downstream_ws
 
