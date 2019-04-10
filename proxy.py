@@ -39,6 +39,20 @@ async def async_main():
             await handle_http(upstream_url, downstream_request)
 
     async def handle_websocket(upstream_url, downstream_request):
+
+        async def on_msg(msg, to_ws):
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                await to_ws.send_str(msg.data)
+
+            elif msg.type == aiohttp.WSMsgType.BINARY:
+                await to_ws.send_bytes(msg.data)
+
+            elif msg.type == aiohttp.WSMsgType.CLOSE:
+                await to_ws.close()
+
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                await to_ws.close()
+
         async with client_session.ws_connect(
                 str(upstream_url),
                 headers=without_transfer_encoding(downstream_request.headers)
@@ -50,17 +64,7 @@ async def async_main():
 
             async def ws_proxy(from_ws, to_ws):
                 async for msg in from_ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        await to_ws.send_str(msg.data)
-
-                    elif msg.type == aiohttp.WSMsgType.BINARY:
-                        await to_ws.send_bytes(msg.data)
-
-                    elif msg.type == aiohttp.WSMsgType.CLOSE:
-                        await to_ws.close()
-
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        await to_ws.close()
+                    await on_msg(msg, to_ws)
 
             upstream_reader_task = asyncio.ensure_future(ws_proxy(downstream_ws, upstream_ws))
             await ws_proxy(upstream_ws, downstream_ws)
