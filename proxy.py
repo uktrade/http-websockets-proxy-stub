@@ -40,7 +40,7 @@ async def async_main():
 
     async def handle_websocket(upstream_url, downstream_request):
 
-        async def on_msg(msg, to_ws):
+        async def proxy_msg(msg, to_ws):
             if msg.type == aiohttp.WSMsgType.TEXT:
                 await to_ws.send_str(msg.data)
 
@@ -62,7 +62,7 @@ async def async_main():
                     upstream_connection.set_result(upstream_ws)
                     downstream_ws = await downstream_connection
                     async for msg in upstream_ws:
-                        await on_msg(msg, downstream_ws)
+                        await proxy_msg(msg, downstream_ws)
             except BaseException as exception:
                 if not upstream_connection.done():
                     upstream_connection.set_exception(exception)
@@ -85,7 +85,7 @@ async def async_main():
             downstream_connection.set_result(downstream_ws)
 
             async for msg in downstream_ws:
-                await on_msg(msg, upstream_ws)
+                await proxy_msg(msg, upstream_ws)
         finally:
             upstream_task.cancel()
 
