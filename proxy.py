@@ -19,7 +19,6 @@ async def async_main():
 
     port = int(os.environ['PORT'])
     upstream_root = os.environ['UPSTREAM_ROOT']
-    client_session = aiohttp.ClientSession()
 
     def without_transfer_encoding(headers):
         return {
@@ -114,23 +113,23 @@ async def async_main():
 
         return downstream_response
 
-    app = web.Application()
-    app.add_routes([
-        getattr(web, method)(r'/{path:.*}', handle)
-        for method in ['delete', 'get', 'head', 'options', 'patch', 'post', 'put']
-    ])
+    async with aiohttp.ClientSession() as client_session:
+        app = web.Application()
+        app.add_routes([
+            getattr(web, method)(r'/{path:.*}', handle)
+            for method in ['delete', 'get', 'head', 'options', 'patch', 'post', 'put']
+        ])
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    await asyncio.Future()
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        await asyncio.Future()
 
 
 def main():
     loop = asyncio.get_event_loop()
-    loop.create_task(async_main())
-    loop.run_forever()
+    loop.run_until_complete(async_main())
 
 
 if __name__ == '__main__':
