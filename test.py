@@ -95,7 +95,7 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
             'from-downstream': 'downstream-header-value',
         }
         async with session.request(
-                'PATCH', 'http://localhost:8000/http',
+                'PATCH', 'http://localhost:9000/http',
                 data=sent_content(), headers=sent_headers) as response:
             received_content = await response.json()
             received_headers = response.headers

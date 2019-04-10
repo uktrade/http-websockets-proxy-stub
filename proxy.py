@@ -32,8 +32,9 @@ async def async_main():
             .with_path(downstream_request.url.path) \
             .with_query(downstream_request.url.query)
         is_websocket = \
-            downstream_request.headers.get('connection', None) == 'Upgrade' and \
-            downstream_request.headers.get('upgrade', None) == 'websocket'
+            downstream_request.headers.get('connection', '').lower() == 'upgrade' and \
+            downstream_request.headers.get('upgrade', '').lower() == 'websocket'
+
         return \
             await handle_websocket(upstream_url, downstream_request) if is_websocket else \
             await handle_http(upstream_url, downstream_request)
@@ -60,6 +61,7 @@ async def async_main():
                         headers=without_transfer_encoding(downstream_request.headers)
                 ) as upstream_ws:
                     upstream_connection.set_result(upstream_ws)
+                    downstream_ws = await downstream_connection
                     async for msg in upstream_ws:
                         await on_msg(msg, downstream_ws)
             except BaseException as exception:
@@ -70,7 +72,10 @@ async def async_main():
         # This is slightly convoluted, but aiohttp documents that reading
         # from websockets should be done in the same task as the websocket was
         # created, so we read from downstream in _this_ task, and create
-        # another task to connect to and read from the upstream socket
+        # another task to connect to and read from the upstream socket. We
+        # also need to make sure we wait for each connection before sending
+        # data to it
+        downstream_connection = asyncio.Future()
         upstream_connection = asyncio.Future()
         upstream_task = asyncio.ensure_future(upstream())
 
@@ -78,6 +83,7 @@ async def async_main():
             upstream_ws = await upstream_connection
             downstream_ws = web.WebSocketResponse()
             await downstream_ws.prepare(downstream_request)
+            downstream_connection.set_result(downstream_ws)
 
             async for msg in downstream_ws:
                 await on_msg(msg, upstream_ws)
