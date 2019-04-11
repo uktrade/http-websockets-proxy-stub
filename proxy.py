@@ -5,6 +5,11 @@ import sys
 
 import aiohttp
 from aiohttp import web
+
+from aiohttp_session import (
+    SimpleCookieStorage,
+    session_middleware,
+)
 from yarl import (
     URL,
 )
@@ -114,7 +119,11 @@ async def async_main():
         return downstream_response
 
     async with aiohttp.ClientSession() as client_session:
-        app = web.Application()
+        cookie_storage = SimpleCookieStorage()
+        app = web.Application(middlewares=[
+            # Not for production use, just for testing
+            session_middleware(cookie_storage),
+        ])
         app.add_routes([
             getattr(web, method)(r'/{path:.*}', handle)
             for method in ['delete', 'get', 'head', 'options', 'patch', 'post', 'put']
