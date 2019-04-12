@@ -7,9 +7,15 @@ There are no "hooks" offered: the code must be directly incorporated into the re
 
 ## Usage
 
-To proxy `http://localhost:8000` to `http://localhost:8888`:
+To proxy `http://localhost:8000` to `http://localhost:8888`, with Redis already running locally:
 
 ```bash
 pip install -r requirements.txt
-PORT=8000 UPSTREAM_ROOT=http://localhost:8888 python3 proxy.py
+PORT=8000 \
+  UPSTREAM_ROOT=http://localhost:8888 \
+  SSO_CLIENT_ID=some-client \
+  SSO_CLIENT_SECRET=some-secret \
+  SSO_BASE_URL=https://sso.base \
+  REDIS_URL=redis://localhost:6379 \
+  python3 proxy.py
 ```
