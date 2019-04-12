@@ -6,11 +6,11 @@
 #
 aiohttp==3.5.4
 aiohttp_session==2.7.0
-async-timeout==3.0.1      # via aiohttp
+aioredis==1.2.0
+async-timeout==3.0.1      # via aiohttp, aioredis
 attrs==19.1.0             # via aiohttp
 chardet==3.0.4            # via aiohttp
-idna-ssl==1.1.0           # via aiohttp
-idna==2.8                 # via idna-ssl, yarl
+hiredis==1.0.0            # via aioredis
+idna==2.8                 # via yarl
 multidict==4.5.2          # via aiohttp, yarl
-typing-extensions==3.7.2  # via aiohttp
 yarl==1.3.0               # via aiohttp

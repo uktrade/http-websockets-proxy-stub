@@ -26,10 +26,18 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
         loop = asyncio.get_event_loop()
         self.addCleanup(loop.run_until_complete, coroutine())
 
-    @patch.dict(os.environ, {'PORT': '8000', 'UPSTREAM_ROOT': 'http://localhost:9000'})
+    @patch.dict(os.environ, {
+        'PORT': '8000',
+        'UPSTREAM_ROOT': 'http://localhost:9000',
+        'SSO_CLIENT_ID': 'some-id',
+        'SSO_CLIENT_SECRET': 'some-secret',
+        'SSO_BASE_URL': 'http://localhost:8005',
+        'REDIS_URL': 'redis://localhost:6379',
+    })
     @async_test
     async def test_happy_path_behaviour(self):
-        """Asserts on almost all of the happy path behaviour of the proxy
+        """Asserts on almost all of the happy path behaviour of the proxy,
+        including redirection to and from SSO
         """
         proxy_task = asyncio.ensure_future(proxy.async_main())
 
@@ -37,6 +45,37 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
             proxy_task.cancel()
             await asyncio.sleep(0)
         self.add_async_cleanup(cleanup_proxy)
+
+        # Start a mock SSO
+        async def handle_authorize(request):
+            state = request.query['state']
+            code = 'some-code'
+            return web.Response(status=302, headers={
+                'Location': request.query['redirect_uri'] + f'?state={state}&code={code}',
+            })
+
+        async def handle_token(_):
+            data = {
+                'access_token': 'some-token'
+            }
+            return web.json_response(data, status=200, headers={
+            })
+
+        async def handle_me(_):
+            data = {
+            }
+            return web.json_response(data, status=200, headers={
+            })
+        sso_app = web.Application()
+        sso_app.add_routes([
+            web.get('/o/authorize/', handle_authorize),
+            web.post('/o/token/', handle_token),
+            web.get('/api/v1/user/me/', handle_me),
+        ])
+        sso_runner = web.AppRunner(sso_app)
+        await sso_runner.setup()
+        sso_site = web.TCPSite(sso_runner, '0.0.0.0', 8005)
+        await sso_site.start()
 
         # Start the upstream echo server
         async def handle_http(request):
@@ -67,7 +106,7 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
 
         upstream = web.Application()
         upstream.add_routes([
-            # Using patch as it's one that can be forgotten about
+            web.get('/http', handle_http),
             web.patch('/http', handle_http),
             web.get('/websockets', handle_websockets),
         ])
@@ -91,6 +130,23 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
             for _ in range(10000):
                 yield b'Some content'
 
+        # The initial connection has to be a GET, since these are redirected
+        # to SSO. Unsure initial connection being a non-GET is a feature that
+        # needs to be supported / what should happen in this case
+        sent_headers = {
+            'from-downstream': 'downstream-header-value',
+        }
+        async with session.request(
+                'GET', 'http://localhost:8000/http', headers=sent_headers) as response:
+            received_content = await response.json()
+            received_headers = response.headers
+
+        # Assert that we received the echo
+        self.assertEqual(received_content['method'], 'GET')
+        self.assertEqual(received_content['headers']['from-downstream'], 'downstream-header-value')
+        self.assertEqual(received_headers['from-upstream'], 'upstream-header-value')
+
+        # We are authorized by SSO, and can do non-GETs
         sent_headers = {
             'from-downstream': 'downstream-header-value',
         }
@@ -107,7 +163,6 @@ class TestHttpWebsocketsProxy(unittest.TestCase):
         self.assertEqual(received_headers['from-upstream'], 'upstream-header-value')
 
         # Make a websockets connection to the proxy
-        # (We deliberatly use the same session to ensure to assert on re-used connections)
         sent_headers = {
             'from-downstream-websockets': 'websockets-header-value',
         }
