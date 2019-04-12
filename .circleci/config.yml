@@ -8,6 +8,7 @@ jobs:
   test-3.7.1:
     docker:
       - image: python:3.7.1
+      - image: redis:4.0.10
     steps:
       - checkout
       - run:

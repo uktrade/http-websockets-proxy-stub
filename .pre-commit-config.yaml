@@ -45,6 +45,7 @@ repos:
         - --disable=protected-access
         - --disable=too-few-public-methods
         - --disable=too-many-instance-attributes
+        - --disable=too-many-locals
         - --disable=too-many-lines
         - --disable=too-many-public-methods
         - --disable=too-many-statements
